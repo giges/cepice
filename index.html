@@ -236,6 +236,8 @@
     var bleServer;
     var bleServiceFound;
     var sensorCharacteristicFound;
+    var ledCharacteristicFound;
+    var connectError = ''; // why connecting failed, shown after the disconnect
 
     // Only one GATT write may run at a time, the other commands wait in this queue
     var commandQueue = [];
@@ -445,8 +447,14 @@
         .then(characteristic => {
             sensorCharacteristicFound = characteristic;
             characteristic.addEventListener('characteristicvaluechanged', handleCharacteristicChange);
-            characteristic.startNotifications();
-            return characteristic.readValue();
+            // GATT operations one after another – Android rejects a second one
+            // while the first is running ("GATT operation already in progress")
+            return characteristic.startNotifications();
+        })
+        .then(() => bleServiceFound.getCharacteristic(ledCharacteristic))
+        .then(characteristic => {
+            ledCharacteristicFound = characteristic;
+            return sensorCharacteristicFound.readValue();
         })
         .then(value => {
             showConnection('connected');
@@ -455,12 +463,14 @@
         .catch(error => {
             console.log('Error: ', error);
             // NotFoundError = the user closed the device chooser, not an error worth showing
-            const message = error.name === 'NotFoundError' ? '' :
-                'Připojení se nezdařilo. Probuďte čepici tlačítkem a zkuste to znovu.';
+            connectError = error.name === 'NotFoundError' ? '' :
+                'Připojení se nezdařilo, zkuste to znovu. (' + error.message + ')';
             if (bleServer && bleServer.connected) {
-                bleServer.disconnect();
+                bleServer.disconnect(); // onDisconnected() then shows connectError
+            } else {
+                showConnection('disconnected', connectError);
+                connectError = '';
             }
-            showConnection('disconnected', message);
         });
     }
 
@@ -472,7 +482,8 @@
         commandQueue = [];
         writeBusy = false;
         latestValueSent.textContent = '–';
-        showConnection('disconnected');
+        showConnection('disconnected', connectError);
+        connectError = '';
     }
 
     function handleCharacteristicChange(event){
@@ -499,10 +510,7 @@
         }
         writeBusy = true;
         const bytes = commandQueue.shift();
-        bleServiceFound.getCharacteristic(ledCharacteristic)
-        .then(characteristic => {
-            return characteristic.writeValue(new Uint8Array(bytes));
-        })
+        ledCharacteristicFound.writeValue(new Uint8Array(bytes))
         .then(() => {
             latestValueSent.textContent = describeCommand(bytes);
             console.log("Value written to LEDcharacteristic:", bytes);
