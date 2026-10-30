@@ -1,0 +1,532 @@
+<!--
+  Based on the Web Bluetooth example by Rui Santos, https://RandomNerdTutorials.com/esp32-web-bluetooth/
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
+  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+-->
+<!--
+  Web Bluetooth client for CepiceBLEDeepSleep (src/main.cpp), designed for mobile phones.
+  Version 2: the three motors are side by side (left / middle / right, as on the cap).
+  Works in Chrome/Edge (Android, desktop). Web Bluetooth needs https or a local file;
+  Firefox and Safari don't support it (on iPhone use the Bluefy browser).
+  It is not compiled into the firmware and not served by the ESP32.
+  Device name, UUIDs and the command format below must match main.cpp.
+-->
+
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f6feb">
+  <title>Čepice</title>
+  <style>
+    :root {
+      --bg: #f2f4f7;
+      --card: #ffffff;
+      --text: #1b1f24;
+      --muted: #69717d;
+      --border: #dde1e6;
+      --accent: #1f6feb;
+      --accent-text: #ffffff;
+      --on: #1f9d55;
+      --pulse: #d97706;
+      --danger: #d13a30;
+      --btn: #eef1f4;
+      --track: #dde1e6;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1216;
+        --card: #1a1f25;
+        --text: #e8ebef;
+        --muted: #8b939e;
+        --border: #2b323a;
+        --accent: #4c8dff;
+        --accent-text: #0f1216;
+        --on: #34c472;
+        --pulse: #f0a032;
+        --danger: #f0574c;
+        --btn: #262c34;
+        --track: #2b323a;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    main {
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+    }
+    header { margin: 4px 4px 16px; }
+    h1 { margin: 0; font-size: 26px; }
+    h2 { margin: 0; font-size: 17px; }
+    .muted { color: var(--muted); }
+    .small { font-size: 13px; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .space { justify-content: space-between; }
+
+    /* Buttons – at least 48 px high for comfortable tapping */
+    .btn {
+      min-height: 48px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--btn);
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      touch-action: manipulation; /* no double-tap zoom delay */
+    }
+    .btn:active:not(:disabled) { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    .wide { width: 100%; }
+    .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+    .danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+    /* Connection */
+    .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--danger); flex: none; }
+    .connected .dot { background: var(--on); }
+    .connecting .dot { background: var(--pulse); }
+    #bleState { font-weight: 600; }
+    #connectButton { margin-top: 14px; }
+    #hint { margin: 10px 0 0; }
+
+    /* Battery */
+    .battery { margin-top: 12px; }
+    .batteryBar {
+      flex: 1;
+      height: 14px;
+      border-radius: 7px;
+      background: var(--track);
+      overflow: hidden;
+    }
+    #batteryFill { height: 100%; width: 0; background: var(--muted); transition: width 0.4s; }
+    #batteryPercent { font-size: 28px; font-weight: 700; min-width: 80px; text-align: right; }
+    #batteryVoltage { margin: 4px 0 0; }
+
+    /* Pulse length – segmented choice, 3 per row */
+    .segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+    .segmented .btn.selected { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+
+    /* Motors – three columns side by side, buttons stacked in each column */
+    .motorGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+    .motor {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 12px 8px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-top: 6px solid var(--border);
+      border-radius: 16px;
+      text-align: center;
+      transition: border-color 0.2s;
+    }
+    .motor.on { border-top-color: var(--on); }
+    .motor.pulse { border-top-color: var(--pulse); }
+    .motor .btn { width: 100%; padding: 0 4px; }
+    .motor .pulseButton { min-height: 96px; } /* the most used button – double height */
+    .motor input { width: 100%; height: 32px; margin: 0; accent-color: var(--accent); }
+    .motor output { font-weight: 600; }
+    .state {
+      font-size: 13px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: var(--btn);
+      color: var(--muted);
+    }
+    .motor.on .state { background: var(--on); color: #fff; }
+    .motor.pulse .state { background: var(--pulse); color: #fff; }
+
+    #allOffButton { margin-top: 4px; font-size: 18px; }
+    #lastSent { text-align: center; margin: 12px 0 0; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Čepice</h1>
+    <div class="muted">Ovládání vibračních motorků</div>
+  </header>
+
+  <section class="card" id="connectionCard">
+    <div class="row"><span class="dot"></span><span id="bleState">Odpojeno</span></div>
+    <button id="connectButton" class="btn primary wide">Připojit</button>
+    <p id="hint" class="muted small">Probuďte čepici tlačítkem a potom se připojte.</p>
+  </section>
+
+  <section class="card">
+    <div class="row space">
+      <h2>Baterie</h2>
+      <span id="timestamp" class="muted small"></span>
+    </div>
+    <div class="row battery">
+      <div class="batteryBar"><div id="batteryFill"></div></div>
+      <span id="batteryPercent">–</span>
+    </div>
+    <p id="batteryVoltage" class="muted small"></p>
+  </section>
+
+  <section class="card">
+    <h2>Délka pulzu</h2>
+    <div class="segmented" id="pulseLength"></div>
+  </section>
+
+  <div id="motors" class="motorGrid"></div>
+
+  <button id="allOffButton" class="btn danger wide needsConnection">Vypnout vše</button>
+  <p id="lastSent" class="muted small">Naposledy odesláno: <span id="valueSent">–</span></p>
+</main>
+
+<script>
+    // Device name and UUIDs – must match main.cpp
+    const deviceName = 'ESP32';
+    const bleService = '19b10000-e8f2-537e-4f6c-d104768a1214';
+    const ledCharacteristic = '19b10001-e8f2-537e-4f6c-d104768a1214';
+    const sensorCharacteristic = '19b10002-e8f2-537e-4f6c-d104768a1214';
+
+    // Commands for main.cpp (first byte = ASCII letter, see the header comment there)
+    const CMD_ALL   = 'A'.charCodeAt(0); // 'A' left middle right
+    const CMD_SET   = 'S'.charCodeAt(0); // 'S' motor duty
+    const CMD_PULSE = 'P'.charCodeAt(0); // 'P' motor duty lenLo lenHi
+
+    // Motor index = motor number in the commands: 0 left, 1 middle, 2 right
+    const motors = [
+        {name: 'Levý'},
+        {name: 'Střední'},
+        {name: 'Pravý'},
+    ];
+    // Texts of the motor states shown on the page
+    const stateNames = {off: 'VYP', on: 'ZAP', pulse: 'PULZ'};
+    const pulseLengths = [250, 500, 750, 1000, 1250, 1500]; // ms
+
+    // DOM Elements
+    const connectionCard = document.getElementById('connectionCard');
+    const connectButton = document.getElementById('connectButton');
+    const bleStateContainer = document.getElementById('bleState');
+    const hint = document.getElementById('hint');
+    const batteryFill = document.getElementById('batteryFill');
+    const batteryPercent = document.getElementById('batteryPercent');
+    const batteryVoltage = document.getElementById('batteryVoltage');
+    const timestampContainer = document.getElementById('timestamp');
+    const pulseLengthContainer = document.getElementById('pulseLength');
+    const motorsContainer = document.getElementById('motors');
+    const allOffButton = document.getElementById('allOffButton');
+    const latestValueSent = document.getElementById('valueSent');
+
+    // Global Variables to Handle Bluetooth
+    var bleServer;
+    var bleServiceFound;
+    var sensorCharacteristicFound;
+
+    // Only one GATT write may run at a time, the other commands wait in this queue
+    var commandQueue = [];
+    var writeBusy = false;
+
+    // Motor state; levels and pulse length are remembered in the browser
+    var motorOn = [false, false, false];
+    var pulseTimers = [null, null, null]; // end of a pulse shown on the page
+    var settings = loadSettings();
+
+    function loadSettings() {
+        const defaults = {pulseLength: 500, levels: [100, 100, 100]};
+        try {
+            const saved = JSON.parse(localStorage.getItem('cepice-settings'));
+            if (saved && pulseLengths.includes(saved.pulseLength) && saved.levels.length === 3) {
+                return saved;
+            }
+        } catch (e) { }
+        return defaults;
+    }
+
+    function saveSettings() {
+        try {
+            localStorage.setItem('cepice-settings', JSON.stringify(settings));
+        } catch (e) { }
+    }
+
+    // ---- Build the page ----
+
+    pulseLengths.forEach(ms => {
+        const button = document.createElement('button');
+        button.className = 'btn';
+        button.textContent = ms + ' ms';
+        button.dataset.ms = ms;
+        button.addEventListener('click', () => {
+            settings.pulseLength = ms;
+            saveSettings();
+            showPulseLength();
+        });
+        pulseLengthContainer.appendChild(button);
+    });
+
+    function showPulseLength() {
+        pulseLengthContainer.querySelectorAll('.btn').forEach(button => {
+            button.classList.toggle('selected', Number(button.dataset.ms) === settings.pulseLength);
+        });
+    }
+
+    motors.forEach((motor, i) => {
+        const card = document.createElement('section');
+        card.className = 'motor';
+        card.innerHTML = `
+            <h2>${motor.name}</h2>
+            <span class="state">${stateNames.off}</span>
+            <input type="range" min="30" max="100" value="${settings.levels[i]}" aria-label="${motor.name} – síla">
+            <output>${settings.levels[i]} %</output>
+            <button class="btn needsConnection" data-action="on">ZAP</button>
+            <button class="btn needsConnection" data-action="off">VYP</button>
+            <button class="btn needsConnection pulseButton" data-action="pulse">PULZ</button>`;
+
+        card.querySelector('[data-action="on"]').addEventListener('click', () => {
+            setMotorState(i, 'on');
+            sendCommand([CMD_SET, i, motorDuty(i)]);
+        });
+        card.querySelector('[data-action="off"]').addEventListener('click', () => {
+            setMotorState(i, 'off');
+            sendCommand([CMD_SET, i, 0]);
+        });
+        // Pulse: the ESP32 switches the motor on and after the pulse length off by itself
+        card.querySelector('[data-action="pulse"]').addEventListener('click', () => {
+            const length = settings.pulseLength;
+            setMotorState(i, 'pulse', length);
+            sendCommand([CMD_PULSE, i, motorDuty(i), length & 0xFF, length >> 8]);
+        });
+
+        // Level slider: update the % text, and send right away if the motor is running
+        const slider = card.querySelector('input');
+        const output = card.querySelector('output');
+        slider.addEventListener('input', () => {
+            settings.levels[i] = Number(slider.value);
+            output.textContent = slider.value + ' %';
+            if (motorOn[i] && bleServer && bleServer.connected) {
+                sendCommand([CMD_SET, i, motorDuty(i)]);
+            }
+        });
+        slider.addEventListener('change', saveSettings);
+
+        motorsContainer.appendChild(card);
+    });
+
+    allOffButton.addEventListener('click', () => {
+        motors.forEach((motor, i) => setMotorState(i, 'off'));
+        sendCommand([CMD_ALL, 0, 0, 0]);
+    });
+
+    connectButton.addEventListener('click', () => {
+        if (bleServer && bleServer.connected) {
+            disconnectDevice();
+        } else if (isWebBluetoothEnabled()) {
+            connectToDevice();
+        }
+    });
+
+    showPulseLength();
+    showConnection('disconnected');
+
+    // ---- Page state ----
+
+    // state: 'off' | 'on' | 'pulse' (pulse is shown for lengthMs, then 'off')
+    function setMotorState(motor, state, lengthMs) {
+        clearTimeout(pulseTimers[motor]);
+        pulseTimers[motor] = null;
+        motorOn[motor] = (state === 'on');
+
+        const card = motorsContainer.children[motor];
+        card.classList.toggle('on', state === 'on');
+        card.classList.toggle('pulse', state === 'pulse');
+        card.querySelector('.state').textContent = stateNames[state];
+
+        if (state === 'pulse') {
+            pulseTimers[motor] = setTimeout(() => setMotorState(motor, 'off'), lengthMs);
+        }
+    }
+
+    // state: 'disconnected' | 'connecting' | 'connected'
+    function showConnection(state, message) {
+        connectionCard.classList.toggle('connected', state === 'connected');
+        connectionCard.classList.toggle('connecting', state === 'connecting');
+        bleStateContainer.textContent = {
+            disconnected: 'Odpojeno',
+            connecting: 'Připojování…',
+            connected: 'Připojeno',
+        }[state];
+        connectButton.textContent = state === 'connected' ? 'Odpojit' : 'Připojit';
+        connectButton.classList.toggle('primary', state !== 'connected');
+        connectButton.disabled = (state === 'connecting');
+        hint.textContent = message ||
+            (state === 'connected' ? '' : 'Probuďte čepici tlačítkem a potom se připojte.');
+        hint.hidden = !hint.textContent;
+
+        document.querySelectorAll('.needsConnection').forEach(el => {
+            el.disabled = (state !== 'connected');
+        });
+    }
+
+    // Battery text from main.cpp, e.g. "60% (3.87 V)"
+    function showBattery(text) {
+        const match = text.match(/(\d+)%\s*\(([\d.]+)\s*V\)/);
+        if (!match) {
+            batteryPercent.textContent = text;
+            return;
+        }
+        const percent = Number(match[1]);
+        batteryPercent.textContent = percent + ' %';
+        batteryVoltage.textContent = match[2] + ' V';
+        batteryFill.style.width = percent + '%';
+        batteryFill.style.background =
+            percent > 50 ? 'var(--on)' : percent > 20 ? 'var(--pulse)' : 'var(--danger)';
+        timestampContainer.textContent = 'aktualizováno ' + getTime();
+    }
+
+    // PWM duty 0..255 of the motor's level
+    function motorDuty(motor) {
+        return Math.round(settings.levels[motor] * 255 / 100);
+    }
+
+    // Command as readable text for the "Last sent" line
+    function describeCommand(bytes) {
+        if (bytes[0] === CMD_ALL) return 'vše vypnuto';
+        const name = motors[bytes[1]].name.toLowerCase();
+        if (bytes[0] === CMD_SET) return bytes[2] ? name + ' zap (' + bytes[2] + ')' : name + ' vyp';
+        return name + ' pulz ' + (bytes[3] | (bytes[4] << 8)) + ' ms (' + bytes[2] + ')';
+    }
+
+    // ---- Bluetooth ----
+
+    // Check if BLE is available in your Browser
+    function isWebBluetoothEnabled() {
+        if (!navigator.bluetooth) {
+            console.log("Web Bluetooth API is not available in this browser!");
+            showConnection('disconnected', 'Tento prohlížeč nepodporuje Bluetooth. Použijte Chrome (Android) nebo Bluefy (iPhone).');
+            return false;
+        }
+        return true;
+    }
+
+    // Connect to BLE Device and Enable Notifications
+    function connectToDevice(){
+        showConnection('connecting');
+        navigator.bluetooth.requestDevice({
+            filters: [{name: deviceName}],
+            optionalServices: [bleService]
+        })
+        .then(device => {
+            console.log('Device Selected:', device.name);
+            device.addEventListener('gattserverdisconnected', onDisconnected);
+            return device.gatt.connect();
+        })
+        .then(gattServer => {
+            bleServer = gattServer;
+            return bleServer.getPrimaryService(bleService);
+        })
+        .then(service => {
+            bleServiceFound = service;
+            return service.getCharacteristic(sensorCharacteristic);
+        })
+        .then(characteristic => {
+            sensorCharacteristicFound = characteristic;
+            characteristic.addEventListener('characteristicvaluechanged', handleCharacteristicChange);
+            characteristic.startNotifications();
+            return characteristic.readValue();
+        })
+        .then(value => {
+            showConnection('connected');
+            showBattery(new TextDecoder().decode(value));
+        })
+        .catch(error => {
+            console.log('Error: ', error);
+            // NotFoundError = the user closed the device chooser, not an error worth showing
+            const message = error.name === 'NotFoundError' ? '' :
+                'Připojení se nezdařilo. Probuďte čepici tlačítkem a zkuste to znovu.';
+            if (bleServer && bleServer.connected) {
+                bleServer.disconnect();
+            }
+            showConnection('disconnected', message);
+        });
+    }
+
+    function onDisconnected(event){
+        console.log('Device Disconnected:', event.target.name);
+        // No auto-reconnect: requestDevice() needs a user click, use the Connect button.
+        // The ESP32 switches all motors off on disconnect, so reset the local state too.
+        motors.forEach((motor, i) => setMotorState(i, 'off'));
+        commandQueue = [];
+        writeBusy = false;
+        latestValueSent.textContent = '–';
+        showConnection('disconnected');
+    }
+
+    function handleCharacteristicChange(event){
+        showBattery(new TextDecoder().decode(event.target.value));
+    }
+
+    // Queue a command for the ESP32 (see main.cpp) and start sending
+    function sendCommand(bytes){
+        if (!(bleServer && bleServer.connected)) {
+            return; // the buttons are disabled while disconnected
+        }
+        // A newer level for the same motor replaces a waiting one (slider sends many values)
+        if (bytes[0] === CMD_SET) {
+            commandQueue = commandQueue.filter(c => !(c[0] === CMD_SET && c[1] === bytes[1]));
+        }
+        commandQueue.push(bytes);
+        sendNextCommand();
+    }
+
+    // Write the next queued command, one GATT write at a time
+    function sendNextCommand(){
+        if (writeBusy || commandQueue.length === 0) {
+            return;
+        }
+        writeBusy = true;
+        const bytes = commandQueue.shift();
+        bleServiceFound.getCharacteristic(ledCharacteristic)
+        .then(characteristic => {
+            return characteristic.writeValue(new Uint8Array(bytes));
+        })
+        .then(() => {
+            latestValueSent.textContent = describeCommand(bytes);
+            console.log("Value written to LEDcharacteristic:", bytes);
+        })
+        .catch(error => {
+            console.error("Error writing to the LED characteristic: ", error);
+        })
+        .finally(() => {
+            writeBusy = false;
+            sendNextCommand();
+        });
+    }
+
+    function disconnectDevice() {
+        console.log("Disconnect Device.");
+        const stop = sensorCharacteristicFound ?
+            sensorCharacteristicFound.stopNotifications().catch(() => {}) : Promise.resolve();
+        stop.then(() => bleServer.disconnect()); // onDisconnected() updates the page
+    }
+
+    function getTime() {
+        const now = new Date();
+        return ("0" + now.getHours()).slice(-2) + ":" + ("0" + now.getMinutes()).slice(-2);
+    }
+</script>
+</body>
+</html>
